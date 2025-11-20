@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 얼굴 모자이크 (모델 선택형)</title>
+    
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- face-api.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/@vladmandic/face-api@latest/dist/face-api.min.js"></script>
+    
+    <style>
+        /* Inter 폰트 임포트 */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+        
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+
+        /* 커스텀 로딩 스피너 */
+        .spinner {
+            width: 56px;
+            height: 56px;
+            border: 6px solid #f3f3f3;
+            border-top: 6px solid #3498db;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        /* 드래그 앤 드롭 영역 하이라이트 */
+        #drop-zone.is-dragover {
+            border-color: #3498db;
+            background-color: #f7fafc;
+        }
+        
+        /* 반응형 캔버스/이미지 컨테이너 */
+        #image-container img,
+        #image-container canvas {
+            max-width: 100%;
+            height: auto;
+            border-radius: 0.5rem; /* 8px */
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+        }
+
+        #result-canvas.drawing-mode {
+            cursor: crosshair;
+        }
+        #result-canvas.eraser-mode {
+            cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-eraser"><path d="M22 13L16 19M22 13L13 22L4 13L13 4L22 13Z"></path></svg>') 12 12, auto;
+        }
+
+        /* 토스트 알림 애니메이션 */
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translate(-50%, 20px); }
+            to { opacity: 1; transform: translate(-50%, 0); }
+        }
+        @keyframes fadeOutDown {
+            from { opacity: 1; transform: translate(-50%, 0); }
+            to { opacity: 0; transform: translate(-50%, 20px); }
+        }
+        .toast-enter {
+            animation: fadeInUp 0.3s forwards;
+        }
+        .toast-exit {
+            animation: fadeOutDown 0.3s forwards;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 dark:bg-gray-900 text-gray-900 dark:text-gray-100 flex items-center justify-center min-h-screen p-4">
+
+    <!-- 토스트 알림 컨테이너 -->
+    <div id="toast-container" class="fixed bottom-10 left-1/2 transform -translate-x-1/2 z-50 hidden pointer-events-none">
+        <div class="bg-gray-800 text-white px-6 py-3 rounded-full shadow-lg text-sm font-medium text-center whitespace-nowrap">
+            <span id="toast-message">알림 메시지</span>
+        </div>
+    </div>
+
+    <!-- 수동 복사 안내 모달 -->
+    <div id="manual-copy-modal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white dark:bg-gray-800 rounded-xl shadow-2xl max-w-md w-full overflow-hidden transform transition-all">
+            <div class="p-6 text-center">
+                <div class="mx-auto flex items-center justify-center h-12 w-12 rounded-full bg-yellow-100 dark:bg-yellow-900 mb-4">
+                    <svg class="h-6 w-6 text-yellow-600 dark:text-yellow-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                    </svg>
+                </div>
+                <h3 class="text-lg leading-6 font-medium text-gray-900 dark:text-gray-100">자동 복사 차단됨</h3>
+                <div class="mt-2">
+                    <p class="text-sm text-gray-500 dark:text-gray-400">
+                        보안 환경 제한으로 인해 자동 복사가 실패했습니다.<br>
+                        아래 이미지를 <strong>우클릭</strong> 후 <strong>'이미지 복사'</strong>를 선택해주세요.
+                    </p>
+                </div>
+                <div class="mt-4 bg-gray-100 dark:bg-gray-700 p-2 rounded-lg">
+                    <img id="manual-copy-image" src="" alt="복사용 이미지" class="w-full h-auto rounded border border-gray-300 dark:border-gray-600">
+                </div>
+                <div class="mt-5 sm:mt-6">
+                    <button type="button" id="close-modal-button" class="w-full inline-flex justify-center rounded-md border border-transparent shadow-sm px-4 py-2 bg-blue-600 text-base font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 sm:text-sm">
+                        확인
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="w-full max-w-2xl bg-white dark:bg-gray-800 rounded-xl shadow-2xl overflow-hidden">
+        <header class="p-6 border-b border-gray-200 dark:border-gray-700">
+            <h1 class="text-2xl font-bold text-center text-blue-600 dark:text-blue-400">AI 얼굴 모자이크</h1>
+            <p class="text-center text-gray-600 dark:text-gray-400 mt-1">브라우저에서 바로! AI 및 수동으로 얼굴을 모자이크 처리합니다.</p>
+        </header>
+
+        <main class="p-6 md:p-8">
+            <!-- 1. 모델 로딩 화면 (초기) -->
+            <div id="model-loading-screen" class="flex flex-col items-center justify-center min-h-[300px]">
+                <div class="spinner"></div>
+                <p class="mt-4 text-lg font-medium">기본 AI 모델을 로딩 중입니다...</p>
+                <p class="text-gray-500">잠시만 기다려주세요.</p>
+            </div>
+
+            <!-- 2. 이미지 업로드 화면 -->
+            <div id="upload-screen" class="hidden">
+                <div id="drop-zone" class="border-4 border-dashed border-gray-300 dark:border-gray-600 rounded-lg p-8 md:p-12 text-center cursor-pointer transition-colors duration-300 hover:border-blue-500 hover:bg-gray-50 dark:hover:bg-gray-700">
+                    <!-- 예시 아이콘 -->
+                    <svg class="w-16 h-16 mx-auto text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
+                    <p class="mt-4 text-lg font-semibold">이미지를 드래그 앤 드롭하세요</p>
+                    <p class="text-gray-500 dark:text-gray-400 mt-1">또는</p>
+                    <button id="upload-button" type="button" class="mt-4 px-6 py-2 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 transition-transform transform hover:scale-105">
+                        파일 선택
+                    </button>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-4">JPG, PNG 파일 / Ctrl+V 로 클립보드 이미지 붙여넣기 가능</p>
+                    <p class="text-xs text-gray-400 dark:text-gray-500 mt-1">모든 처리는 브라우저에서만 이루어집니다.</p>
+                </div>
+                <!-- 숨겨진 파일 입력 -->
+                <input type="file" id="file-input" class="hidden" accept="image/png, image/jpeg">
+            </div>
+
+            <!-- 3. 이미지 미리보기 및 실행 화면 -->
+            <div id="preview-screen" class="hidden">
+                <div id="image-container" class="relative w-full mb-4">
+                    <img id="preview-image" src="" alt="업로드된 이미지 미리보기" class="w-full h-auto rounded-lg shadow-lg" />
+                    <!-- 처리 중 스피너 오버레이 -->
+                    <div id="processing-spinner" class="hidden absolute inset-0 bg-black bg-opacity-60 flex flex-col items-center justify-center rounded-lg z-10">
+                        <div class="spinner"></div>
+                        <p id="processing-message" class="text-white text-lg font-medium mt-4">분석 중...</p>
+                    </div>
+                </div>
+                
+                <!-- AI 모델 선택 및 민감도 설정 -->
+                <div class="mb-4 bg-gray-50 dark:bg-gray-700 p-4 rounded-lg border border-gray-200 dark:border-gray-600">
+                    
+                    <!-- 모델 선택 라디오 버튼 -->
+                    <div class="mb-4">
+                        <p class="text-sm font-semibold text-gray-700 dark:text-gray-200 mb-2">AI 모델 선택:</p>
+                        <div class="flex gap-4">
+                            <label class="flex items-center cursor-pointer p-2 border border-blue-200 rounded-lg bg-white dark:bg-gray-800 hover:bg-blue-50 dark:hover:bg-gray-600 flex-1">
+                                <input type="radio" name="ai-model" value="tiny" class="w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 focus:ring-blue-500" checked>
+                                <div class="ml-2 text-sm">
+                                    <span class="block font-medium text-gray-900 dark:text-gray-100">⚡ 표준 모델</span>
+                                    <span class="block text-xs text-gray-500 dark:text-gray-400">빠름, 정면 얼굴 인식</span>
+                                </div>
+                            </label>
+                            <label class="flex items-center cursor-pointer p-2 border border-purple-200 rounded-lg bg-white dark:bg-gray-800 hover:bg-purple-50 dark:hover:bg-gray-600 flex-1">
+                                <input type="radio" name="ai-model" value="ssd" class="w-4 h-4 text-purple-600 bg-gray-100 border-gray-300 focus:ring-purple-500">
+                                <div class="ml-2 text-sm">
+                                    <span class="block font-medium text-gray-900 dark:text-gray-100">🐢 고성능 모델</span>
+                                    <span class="block text-xs text-gray-500 dark:text-gray-400">느림, 옆모습/작은 얼굴</span>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- 민감도 슬라이더 -->
+                    <div class="flex flex-wrap items-center gap-4">
+                        <div class="flex-grow">
+                            <div class="flex justify-between mb-1">
+                                <label for="score-threshold" class="text-sm font-semibold text-gray-700 dark:text-gray-200">AI 인식 민감도</label>
+                                <span id="score-threshold-value" class="text-sm font-bold text-blue-600 dark:text-blue-300">중간 (0.5)</span>
+                            </div>
+                            <input type="range" id="score-threshold" min="0.1" max="0.9" step="0.1" value="0.5" class="w-full accent-blue-600 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600">
+                            <div class="flex justify-between text-xs text-gray-500 dark:text-gray-400 mt-1">
+                                <span>민감함 (많이 잡음)</span>
+                                <span>엄격함 (확실한 것만)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <button id="change-image-button" type="button" class="w-full px-4 py-3 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-100 font-semibold rounded-lg hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors">
+                        다른 이미지 선택
+                    </button>
+                    <button id="run-mosaic-button" type="button" class="w-full px-4 py-3 bg-blue-600 text-white font-semibold rounded-lg shadow-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 transition-transform transform hover:scale-105">
+                        모자이크 실행
+                    </button>
+                </div>
+            </div>
+
+            <!-- 4. 결과 확인 및 다운로드 화면 -->
+            <div id="result-screen" class="hidden">
+                <div id="canvas-container" class="relative w-full mb-4">
+                    <canvas id="result-canvas" class="w-full h-auto rounded-lg shadow-lg"></canvas>
+                </div>
+                
+                <!-- 수동 모자이크 도구 컨트롤 -->
+                <div id="manual-mosaic-controls" class="hidden bg-gray-50 dark:bg-gray-700 p-4 rounded-lg shadow-inner mb-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <h3 class="text-lg font-semibold">수동 모자이크 도구</h3>
+                        <button id="exit-manual-mode-top" type="button" class="text-sm text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
+                            닫기 ✕
+                        </button>
+                    </div>
+                    
+                    <!-- 컨트롤: 브러시 크기 & 픽셀 크기 -->
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                        <div class="flex flex-wrap items-center gap-2">
+                            <label for="brush-size" class="text-sm font-medium whitespace-nowrap">브러시 크기(영역):</label>
+                            <input type="range" id="brush-size" min="10" max="150" value="40" class="flex-grow accent-blue-600 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600">
+                            <span id="brush-size-value" class="text-sm font-medium w-8 text-right">40</span>px
+                        </div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <label for="pixel-size" class="text-sm font-medium whitespace-nowrap">모자이크 입자(픽셀):</label>
+                            <input type="range" id="pixel-size" min="5" max="50" value="15" class="flex-grow accent-pink-600 h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer dark:bg-gray-600">
+                            <span id="pixel-size-value" class="text-sm font-medium w-8 text-right">15</span>px
+                        </div>
+                    </div>
+
+                    <div class="flex flex-wrap gap-3">
+                        <button id="toggle-draw-mosaic" type="button" class="px-4 py-2 bg-purple-600 text-white font-semibold rounded-lg shadow-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:ring-opacity-75 transition-transform transform hover:scale-105 flex-1 flex items-center justify-center gap-2">
+                            <span>✏️</span> 모자이크 그리기
+                        </button>
+                        <button id="toggle-eraser" type="button" class="px-4 py-2 bg-red-500 text-white font-semibold rounded-lg shadow-md hover:bg-red-600 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-opacity-75 transition-transform transform hover:scale-105 flex-1 flex items-center justify-center gap-2">
+                            <span>🧹</span> 지우개
+                        </button>
+                    </div>
+                    <p class="text-xs text-gray-500 mt-2 text-center">마우스 왼쪽 버튼을 누른 채로 이미지 위를 드래그하세요.</p>
+                </div>
+                
+                 <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <button id="start-new-button" type="button" class="w-full px-4 py-3 bg-gray-200 dark:bg-gray-600 text-gray-800 dark:text-gray-100 font-semibold rounded-lg hover:bg-gray-300 dark:hover:bg-gray-500 transition-colors">
+                        새 이미지로 시작
+                    </button>
+                    <button id="manual-mosaic-tool-button" type="button" class="w-full px-4 py-3 bg-yellow-500 text-white font-semibold rounded-lg shadow-md hover:bg-yellow-600 focus:outline-none focus:ring-2 focus:ring-yellow-400 focus:ring-opacity-75 transition-transform transform hover:scale-105">
+                        수동 모자이크
+                    </button>
+                    <button id="download-button" type="button" class="w-full px-4 py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-opacity-75 transition-transform transform hover:scale-105">
+                        이미지 다운로드
+                    </button>
+                    <button id="copy-to-clipboard-button" type="button" class="w-full px-4 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-75 transition-transform transform hover:scale-105 col-span-full md:col-span-1 md:col-start-2">
+                        클립보드에 복사
+                    </button>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <script type="module">
+        // --- DOM 요소 참조 ---
+        const screens = {
+            modelLoading: document.getElementById('model-loading-screen'),
+            upload: document.getElementById('upload-screen'),
+            preview: document.getElementById('preview-screen'),
+            result: document.getElementById('result-screen'),
+        };
+        const dropZone = document.getElementById('drop-zone');
+        const uploadButton = document.getElementById('upload-button');
+        const fileInput = document.getElementById('file-input');
+        
+        const previewImage = document.getElementById('preview-image');
+        const processingSpinner = document.getElementById('processing-spinner');
+        const processingMessage = document.getElementById('processing-message');
+        const changeImageButton = document.getElementById('change-image-button');
+        const runMosaicButton = document.getElementById('run-mosaic-button');
+        
+        const resultCanvas = document.getElementById('result-canvas');
+        const startNewButton = document.getElementById('start-new-button');
+        const downloadButton = document.getElementById('download-button');
+        const copyToClipboardButton = document.getElementById('copy-to-clipboard-button');
+        
+        // 수동 모자이크 관련 요소
+        const manualMosaicToolButton = document.getElementById('manual-mosaic-tool-button');
+        const manualMosaicControls = document.getElementById('manual-mosaic-controls');
+        
+        const brushSizeSlider = document.getElementById('brush-size');
+        const brushSizeValueSpan = document.getElementById('brush-size-value');
+        
+        const pixelSizeSlider = document.getElementById('pixel-size');
+        const pixelSizeValueSpan = document.getElementById('pixel-size-value');
+
+        const toggleDrawMosaicButton = document.getElementById('toggle-draw-mosaic');
+        const toggleEraserButton = document.getElementById('toggle-eraser');
+        const exitManualModeTopButton = document.getElementById('exit-manual-mode-top');
+
+        // AI 설정 관련 요소
+        const scoreThresholdSlider = document.getElementById('score-threshold');
+        const scoreThresholdValueSpan = document.getElementById('score-threshold-value');
+        const modelRadios = document.getElementsByName('ai-model');
+
+        // 토스트 알림 요소
+        const toastContainer = document.getElementById('toast-container');
+        const toastMessage = document.getElementById('toast-message');
+
+        // 모달 요소
+        const manualCopyModal = document.getElementById('manual-copy-modal');
+        const manualCopyImage = document.getElementById('manual-copy-image');
+        const closeModalButton = document.getElementById('close-modal-button');
+
+        // AI 모델 경로
+        const MODEL_URL = 'https://cdn.jsdelivr.net/npm/@vladmandic/face-api@latest/model/';
+        
+        // 전역 상태 변수
+        let originalImage = null; // 원본 이미지 객체 저장
+        let isModelLoaded = { tiny: false, ssd: false }; // 모델별 로딩 상태
+        let currentModel = 'tiny'; // 현재 선택된 모델 (기본값 tiny)
+        
+        let isDrawing = false;
+        let isEraserMode = false;
+        let lastX = 0;
+        let lastY = 0;
+        
+        // 브러시 및 픽셀 설정
+        let brushSize = parseInt(brushSizeSlider.value);
+        let pixelSize = parseInt(pixelSizeSlider.value);
+        let detectionThreshold = parseFloat(scoreThresholdSlider.value); // 기본값 0.5
+
+        let currentCanvasContext = null; // 현재 작업 중인 캔버스 컨텍스트
+        let manualDrawingLayer = null; // 수동 드로잉을 위한 임시 캔버스
+
+        // --- 토스트 메시지 함수 (alert 대체) ---
+        let toastTimeout;
+        function showToast(message, type = 'info') {
+            toastMessage.textContent = message;
+            toastContainer.classList.remove('hidden');
+            toastContainer.classList.remove('toast-exit');
+            toastContainer.classList.add('toast-enter');
+            
+            // 배경색 변경 (타입에 따라)
+            const toastInner = toastContainer.firstElementChild;
+            if (type === 'error') {
+                toastInner.classList.remove('bg-gray-800', 'bg-green-600');
+                toastInner.classList.add('bg-red-600');
+            } else if (type === 'success') {
+                toastInner.classList.remove('bg-gray-800', 'bg-red-600');
+                toastInner.classList.add('bg-green-600');
+            } else {
+                toastInner.classList.remove('bg-red-600', 'bg-green-600');
+                toastInner.classList.add('bg-gray-800');
+            }
+
+            if (toastTimeout) clearTimeout(toastTimeout);
+            
+            toastTimeout = setTimeout(() => {
+                toastContainer.classList.remove('toast-enter');
+                toastContainer.classList.add('toast-exit');
+                setTimeout(() => {
+                    toastContainer.classList.add('hidden');
+                }, 300);
+            }, 3000); // 3초 후 사라짐
+        }
+
+        // --- 화면 전환 함수 ---
+        function showScreen(screenId) {
+            Object.values(screens).forEach(screen => screen.classList.add('hidden'));
+            if (screens[screenId]) {
+                screens[screenId].classList.remove('hidden');
+            }
+        }
+        
+        // --- 스피너 제어 함수 (메시지 지원) ---
+        function showProcessingSpinner(show, message = "처리 중...") {
+            processingMessage.textContent = message;
+            if (show) {
+                processingSpinner.classList.remove('hidden');
+                processingSpinner.classList.add('flex');
+            } else {
+                processingSpinner.classList.add('hidden');
+                processingSpinner.classList.remove('flex');
+            }
+        }
+
+        // --- 1. AI 모델 로드 ---
+        async function loadInitialModel() {
+            try {
+                // 기본적으로 Tiny 모델만 먼저 로드 (빠른 시작)
+                await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URL);
+                isModelLoaded.tiny = true;
+                showScreen('upload'); 
+                showToast("AI 모델 준비 완료 (표준 모드)", 'success');
+            } catch (error) {
+                console.error("AI 모델 로딩 실패:", error);
+                showToast("AI 모델 로딩에 실패했습니다. 새로고침 해주세요.", 'error');
+            }
+        }
+
+        async function loadSsdModel() {
+            if (isModelLoaded.ssd) return true; // 이미 로드됨
+            
+            showProcessingSpinner(true, "고성능 AI 모델 다운로드 중... (5MB)");
+            try {
+                await faceapi.nets.ssdMobilenetv1.loadFromUri(MODEL_URL);
+                isModelLoaded.ssd = true;
+                showProcessingSpinner(false);
+                showToast("고성능 모델 로드 완료!", 'success');
+                return true;
+            } catch (error) {
+                showProcessingSpinner(false);
+                console.error("고성능 모델 로딩 실패:", error);
+                showToast("고성능 모델 다운로드 실패. 네트워크를 확인하세요.", 'error');
+                // 실패 시 라디오 버튼 원복
+                modelRadios[0].checked = true;
+                currentModel = 'tiny';
+                return false;
+            }
+        }
+
+        // --- 2. 파일 처리 ---
+        function handleFile(file) {
+            if (!file || !file.type.startsWith('image/')) {
+                showToast("이미지 파일(JPG, PNG)만 업로드할 수 있습니다.", 'error');
+                return;
+            }
+
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const imageUrl = e.target.result;
+                previewImage.src = imageUrl;
+                
+                // 원본 이미지 객체 생성 (나중에 캔버스에 그릴 때 필요)
+                originalImage = new Image();
+                originalImage.onload = () => {
+                    showScreen('preview'); // 이미지 로드 완료 후 미리보기 화면 표시
+                    showProcessingSpinner(false);
+                    resultCanvas.width = 0; // 캔버스 초기화
+                    resultCanvas.height = 0;
+                    // 수동 모자이크 모드 비활성화 및 컨트롤 숨기기
+                    exitManualMosaicMode();
+                };
+                originalImage.src = imageUrl;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        // --- 3. 모자이크 처리 실행 ---
+        async function runMosaic() {
+            if (!originalImage) {
+                showToast("이미지가 로드되지 않았습니다.", 'error');
+                return;
+            }
+
+            // 현재 모델에 따라 메시지 변경
+            const statusMsg = currentModel === 'ssd' 
+                ? "고성능 AI가 정밀 분석 중...\n(시간이 걸릴 수 있습니다)" 
+                : "표준 AI가 빠르게 분석 중...";
+            
+            showProcessingSpinner(true, statusMsg);
+            runMosaicButton.disabled = true;
+            runMosaicButton.textContent = "처리 중...";
+
+            try {
+                // 캔버스 설정
+                currentCanvasContext = resultCanvas.getContext('2d');
+                resultCanvas.width = originalImage.naturalWidth;
+                resultCanvas.height = originalImage.naturalHeight;
+
+                // 1. 원본 이미지를 캔버스에 그립니다.
+                currentCanvasContext.drawImage(originalImage, 0, 0);
+
+                let detections = [];
+
+                if (currentModel === 'ssd') {
+                     // 고성능 모델 (SSD MobileNet V1)
+                     if (!isModelLoaded.ssd) await loadSsdModel();
+                     
+                     const detectorOptions = new faceapi.SsdMobilenetv1Options({
+                        minConfidence: detectionThreshold
+                    });
+                    detections = await faceapi.detectAllFaces(originalImage, detectorOptions);
+
+                } else {
+                    // 표준 모델 (Tiny Face Detector)
+                    // scoreThreshold가 낮을수록 민감
+                    // TinyFaceDetectorOptions에서는 scoreThreshold 사용
+                    // 슬라이더 값(0.1~0.9)을 그대로 적용하되,
+                    // 0.5(중간) 기준. Tiny는 0.5가 기본.
+                    const detectorOptions = new faceapi.TinyFaceDetectorOptions({
+                        inputSize: 512, 
+                        scoreThreshold: detectionThreshold
+                    });
+                    detections = await faceapi.detectAllFaces(originalImage, detectorOptions);
+                }
+                
+                // 2. 감지된 얼굴에 모자이크 적용
+                if (detections.length > 0) {
+                    // 첫 번째 얼굴 기준으로 모자이크 입자 크기 자동 설정
+                    const firstFaceWidth = detections[0].box.width;
+                    const autoPixelSize = Math.max(10, Math.floor(firstFaceWidth / 15));
+                    
+                    // UI 및 변수 업데이트
+                    pixelSize = autoPixelSize;
+                    pixelSizeSlider.value = autoPixelSize;
+                    pixelSizeValueSpan.textContent = autoPixelSize;
+                    
+                    applyPixelation(currentCanvasContext, detections);
+                    showToast(`${detections.length}개의 얼굴을 찾아 모자이크 처리했습니다.`, 'success');
+                } else {
+                    console.log("얼굴이 감지되지 않았습니다.");
+                    showToast("얼굴이 감지되지 않았습니다. 모델이나 민감도를 변경해보세요.", 'info');
+                }
+
+                showScreen('result'); // 결과 화면 표시
+                // 수동 모자이크 모드 비활성화 및 컨트롤 숨기기
+                exitManualMosaicMode();
+
+            } catch (error) {
+                console.error("모자이크 처리 중 오류:", error);
+                showToast("모자이크 처리에 실패했습니다. 다시 시도해주세요.", 'error');
+            } finally {
+                showProcessingSpinner(false);
+                runMosaicButton.disabled = false;
+                runMosaicButton.textContent = "모자이크 실행";
+            }
+        }
+        
+        // --- 4. 픽셀 모자이크 효과 적용 함수 ---
+        function applyPixelation(ctx, detections, area = null) {
+            // 임시 캔버스를 사용하여 픽셀화 (이 방식이 성능이 우수함)
+            const tempCanvas = document.createElement('canvas');
+            const tempCtx = tempCanvas.getContext('2d');
+            
+            // 픽셀화 비활성화 (선명한 픽셀 효과)
+            ctx.imageSmoothingEnabled = false;
+
+            const targets = area ? [{ box: area }] : detections;
+
+            targets.forEach(detection => {
+                const { x, y, width, height } = detection.box;
+                
+                // 얼굴 크기에 비례하여 픽셀 크기 결정 (최소 10x10)
+                // AI 자동 모자이크 시 픽셀 크기 계산
+                const pixelFactor = Math.max(10, Math.floor(width / 15));
+                
+                tempCanvas.width = pixelFactor;
+                tempCanvas.height = pixelFactor;
+
+                // 1. 얼굴 영역을 작은 임시 캔버스로 축소하여 그립니다. (픽셀화)
+                tempCtx.drawImage(originalImage, x, y, width, height, 0, 0, pixelFactor, pixelFactor);
+
+                // 2. 축소된 이미지를 다시 원래 캔버스의 얼굴 위치에 확대하여 그립니다.
+                ctx.drawImage(tempCanvas, 0, 0, pixelFactor, pixelFactor, x, y, width, height);
+            });
+        }
+
+        // --- 5. 앱 초기화 및 다운로드 ---
+        function resetApp() {
+            originalImage = null;
+            previewImage.src = "";
+            fileInput.value = null; // 파일 입력 초기화
+            resultCanvas.width = 0; // 캔버스 초기화
+            resultCanvas.height = 0;
+            exitManualMosaicMode(); // 수동 모자이크 모드 비활성화
+            showScreen('upload');
+        }
+
+        function downloadImage() {
+            const link = document.createElement('a');
+            link.download = 'ai_mosaic_image.png';
+            link.href = resultCanvas.toDataURL('image/png');
+            link.click();
+        }
+
+        // --- 클립보드 기능 (개선된 버전) ---
+        async function copyImageToClipboard() {
+            try {
+                const blob = await new Promise(resolve => resultCanvas.toBlob(resolve, 'image/png'));
+                if (!blob) {
+                     showToast("복사할 이미지가 없습니다.", 'error');
+                     return;
+                }
+                const item = new ClipboardItem({ "image/png": blob });
+                await navigator.clipboard.write([item]);
+                showToast("이미지가 클립보드에 복사되었습니다!", 'success');
+            } catch (error) {
+                console.error("클립보드 복사 실패:", error);
+                // 보안 정책 위반(샌드박스 iframe)인 경우 사용자에게 안내
+                if (error.name === 'NotAllowedError' || error.name === 'SecurityError') {
+                    showManualCopyModal();
+                } else {
+                    showToast("클립보드 복사에 실패했습니다. (HTTPS 환경 필수)", 'error');
+                }
+            }
+        }
+        
+        // 수동 복사 안내 모달 표시 함수
+        function showManualCopyModal() {
+            manualCopyImage.src = resultCanvas.toDataURL('image/png');
+            manualCopyModal.classList.remove('hidden');
+        }
+
+        async function pasteImageFromClipboard(event) {
+            if (event.clipboardData && event.clipboardData.files.length > 0) {
+                handleFile(event.clipboardData.files[0]);
+                event.preventDefault(); // 기본 붙여넣기 동작 방지
+            } else if (event.clipboardData && event.clipboardData.items) {
+                for (let i = 0; i < event.clipboardData.items.length; i++) {
+                    const item = event.clipboardData.items[i];
+                    if (item.type.startsWith('image/')) {
+                        const file = item.getAsFile();
+                        if (file) {
+                            handleFile(file);
+                            event.preventDefault(); // 기본 붙여넣기 동작 방지
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+
+        // --- 수동 모자이크 도구 기능 ---
+
+        function enterManualMosaicMode() {
+            if (!currentCanvasContext || !originalImage) {
+                showToast("먼저 이미지를 업로드하고 모자이크를 실행해주세요.", 'error');
+                return;
+            }
+
+            manualMosaicControls.classList.remove('hidden');
+            manualMosaicToolButton.classList.add('hidden'); // 수동 모자이크 버튼 숨기기
+
+            // 수동 드로잉을 위한 임시 캔버스 생성
+            manualDrawingLayer = document.createElement('canvas');
+            manualDrawingLayer.width = resultCanvas.width;
+            manualDrawingLayer.height = resultCanvas.height;
+            const manualCtx = manualDrawingLayer.getContext('2d');
+
+            // 원본 캔버스의 내용을 임시 캔버스로 복사 (초기 상태)
+            manualCtx.drawImage(resultCanvas, 0, 0);
+
+            // resultCanvas에 이벤트 리스너 추가
+            resultCanvas.addEventListener('mousedown', startDrawing);
+            resultCanvas.addEventListener('mousemove', draw);
+            resultCanvas.addEventListener('mouseup', stopDrawing);
+            resultCanvas.addEventListener('mouseout', stopDrawing);
+
+            // UI 초기화: 슬라이더 값 동기화
+            brushSizeValueSpan.textContent = brushSizeSlider.value;
+            pixelSizeValueSpan.textContent = pixelSizeSlider.value;
+
+            // 중요: 모자이크 그리기 모드 기본 활성화
+            toggleDrawMosaic();
+        }
+
+        function exitManualMosaicMode() {
+            manualMosaicControls.classList.add('hidden');
+            manualMosaicToolButton.classList.remove('hidden'); // 수동 모자이크 버튼 다시 보이기
+            
+            resultCanvas.removeEventListener('mousedown', startDrawing);
+            resultCanvas.removeEventListener('mousemove', draw);
+            resultCanvas.removeEventListener('mouseup', stopDrawing);
+            resultCanvas.removeEventListener('mouseout', stopDrawing);
+            
+            resultCanvas.classList.remove('drawing-mode', 'eraser-mode');
+            isDrawing = false;
+            isEraserMode = false;
+
+            // 버튼 색상 초기화
+            toggleDrawMosaicButton.classList.remove('bg-purple-800', 'ring-2', 'ring-purple-400');
+            toggleEraserButton.classList.remove('bg-red-800', 'ring-2', 'ring-red-300');
+        }
+
+        function getCanvasMousePosition(event) {
+            const rect = resultCanvas.getBoundingClientRect();
+            const scaleX = resultCanvas.width / rect.width;
+            const scaleY = resultCanvas.height / rect.height;
+            return {
+                x: (event.clientX - rect.left) * scaleX,
+                y: (event.clientY - rect.top) * scaleY
+            };
+        }
+
+        function startDrawing(e) {
+            if (e.button !== 0) return; // 좌클릭만 허용
+            isDrawing = true;
+            const { x, y } = getCanvasMousePosition(e);
+            lastX = x;
+            lastY = y;
+            if (isEraserMode) {
+                erase(x, y);
+            } else {
+                drawMosaicManual(x, y);
+            }
+        }
+
+        function draw(e) {
+            if (!isDrawing) return;
+            const { x, y } = getCanvasMousePosition(e);
+            if (isEraserMode) {
+                erase(x, y);
+            } else {
+                drawMosaicManual(x, y);
+            }
+            lastX = x;
+            lastY = y;
+        }
+
+        function stopDrawing() {
+            isDrawing = false;
+        }
+
+        // 수동 모자이크 그리기
+        function drawMosaicManual(x, y) {
+            const tempCtx = manualDrawingLayer.getContext('2d');
+            
+            // 캔버스 복원 (이전 모자이크 위에 다시 그리지 않도록)
+            tempCtx.clearRect(0, 0, manualDrawingLayer.width, manualDrawingLayer.height);
+            tempCtx.drawImage(originalImage, 0, 0); // 원본 이미지 위에 그릴 준비
+
+            // 원본 캔버스에서 해당 영역의 픽셀 정보를 가져와서 픽셀화
+            const mosaicSize = brushSize; // 브러시 크기 (영역)
+            const halfMosaic = mosaicSize / 2;
+
+            const startX = Math.max(0, x - halfMosaic);
+            const startY = Math.max(0, y - halfMosaic);
+            const endX = Math.min(originalImage.naturalWidth, x + halfMosaic);
+            const endY = Math.min(originalImage.naturalHeight, y + halfMosaic);
+
+            const width = endX - startX;
+            const height = endY - startY;
+
+            if (width <= 0 || height <= 0) return;
+
+            // 작은 임시 캔버스에 원본 이미지의 해당 영역 그리기
+            const pixelCanvas = document.createElement('canvas');
+            const pixelCtx = pixelCanvas.getContext('2d');
+            
+            // 픽셀 크기(입자 굵기)는 사용자가 설정한 값(pixelSize)을 따릅니다.
+            const effectivePixelFactor = pixelSize; 
+            
+            // 1. 픽셀화를 위해 이미지를 엄청 작게 축소합니다.
+            const scaledWidth = Math.max(1, Math.floor(width / effectivePixelFactor));
+            const scaledHeight = Math.max(1, Math.floor(height / effectivePixelFactor));
+            
+            pixelCanvas.width = scaledWidth;
+            pixelCanvas.height = scaledHeight;
+
+            pixelCtx.imageSmoothingEnabled = false;
+            // 작게 그림
+            pixelCtx.drawImage(originalImage, startX, startY, width, height, 0, 0, scaledWidth, scaledHeight);
+
+            currentCanvasContext.imageSmoothingEnabled = false;
+            // 다시 크게 그림 (픽셀화 효과)
+            currentCanvasContext.drawImage(pixelCanvas, 0, 0, scaledWidth, scaledHeight, startX, startY, width, height);
+        }
+        
+        // 지우개
+        function erase(x, y) {
+            const halfBrush = brushSize / 2;
+            const startX = Math.max(0, x - halfBrush);
+            const startY = Math.max(0, y - halfBrush);
+            const endX = Math.min(originalImage.naturalWidth, x + halfBrush);
+            const endY = Math.min(originalImage.naturalHeight, y + halfBrush);
+
+            const width = endX - startX;
+            const height = endY - startY;
+
+            if (width <= 0 || height <= 0) return;
+
+            // 원본 이미지에서 해당 영역을 다시 그려서 모자이크를 지웁니다.
+            currentCanvasContext.drawImage(originalImage, startX, startY, width, height, startX, startY, width, height);
+        }
+
+        function toggleDrawMosaic() {
+            isEraserMode = false;
+            resultCanvas.classList.add('drawing-mode');
+            resultCanvas.classList.remove('eraser-mode');
+            toggleDrawMosaicButton.classList.add('bg-purple-800', 'ring-2', 'ring-purple-400');
+            toggleEraserButton.classList.remove('bg-red-800', 'ring-2', 'ring-red-300');
+        }
+
+        function toggleEraser() {
+            isEraserMode = true;
+            resultCanvas.classList.add('eraser-mode');
+            resultCanvas.classList.remove('drawing-mode');
+            toggleEraserButton.classList.add('bg-red-800', 'ring-2', 'ring-red-300');
+            toggleDrawMosaicButton.classList.remove('bg-purple-800', 'ring-2', 'ring-purple-400');
+        }
+
+        // --- 이벤트 리스너 ---
+
+        // 파일 선택 버튼
+        uploadButton.addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', (e) => handleFile(e.target.files[0]));
+
+        // 드래그 앤 드롭
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault(); // 기본 이벤트 방지
+            dropZone.classList.add('is-dragover');
+        });
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('is-dragover');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault(); // 기본 이벤트 방지
+            dropZone.classList.remove('is-dragover');
+            const file = e.dataTransfer.files[0];
+            handleFile(file);
+        });
+
+        // 클립보드 붙여넣기 (Ctrl+V)
+        document.addEventListener('paste', (e) => {
+            // 업로드 화면일 때만 붙여넣기 허용
+            if (!screens.upload.classList.contains('hidden')) {
+                pasteImageFromClipboard(e);
+            }
+        });
+
+        // 모자이크 실행
+        runMosaicButton.addEventListener('click', runMosaic);
+
+        // 수동 모자이크 도구 활성화
+        manualMosaicToolButton.addEventListener('click', enterManualMosaicMode);
+        
+        // 수동 모자이크 컨트롤 버튼
+        toggleDrawMosaicButton.addEventListener('click', toggleDrawMosaic);
+        toggleEraserButton.addEventListener('click', toggleEraser);
+        exitManualModeTopButton.addEventListener('click', exitManualMosaicMode);
+
+        // 슬라이더 이벤트
+        brushSizeSlider.addEventListener('input', (e) => {
+            brushSize = parseInt(e.target.value);
+            brushSizeValueSpan.textContent = brushSize;
+        });
+        
+        pixelSizeSlider.addEventListener('input', (e) => {
+            pixelSize = parseInt(e.target.value);
+            pixelSizeValueSpan.textContent = pixelSize;
+        });
+
+        // AI 설정 슬라이더 이벤트
+        scoreThresholdSlider.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            detectionThreshold = val;
+            
+            let label = "중간 (0.5)";
+            if(val < 0.3) label = "매우 민감 (0.1~0.2)";
+            else if(val < 0.5) label = "민감 (0.3~0.4)";
+            else if(val > 0.7) label = "매우 엄격 (0.8~0.9)";
+            else if(val > 0.5) label = "엄격 (0.6~0.7)";
+            
+            scoreThresholdValueSpan.textContent = `${label}`;
+        });
+        
+        // 모델 선택 라디오 버튼 이벤트
+        Array.from(modelRadios).forEach(radio => {
+            radio.addEventListener('change', async (e) => {
+                const selectedValue = e.target.value;
+                if (selectedValue === 'ssd' && !isModelLoaded.ssd) {
+                    await loadSsdModel(); // 선택 시 로드
+                }
+                currentModel = selectedValue;
+            });
+        });
+        
+        // 모달 닫기
+        closeModalButton.addEventListener('click', () => {
+            manualCopyModal.classList.add('hidden');
+        });
+
+        // 다른 이미지 선택 / 새 이미지로 시작
+        changeImageButton.addEventListener('click', resetApp);
+        startNewButton.addEventListener('click', resetApp);
+        
+        // 다운로드
+        downloadButton.addEventListener('click', downloadImage);
+
+        // 클립보드 복사
+        copyToClipboardButton.addEventListener('click', copyImageToClipboard);
+
+        // --- 앱 시작 ---
+        window.onload = () => {
+            showScreen('modelLoading'); // 앱 시작 시 모델 로딩 화면 표시
+            loadInitialModel(); // 초기 모델 로드 (tiny만)
+        };
+
+    </script>
+</body>
+</html>
